@@ -42,15 +42,17 @@ class MotionTracker {
         val vRow = vP.rowStride
         val vPix = vP.pixelStride
 
-        var model = bg
-        val init = model == null || gw != gridW || gh != gridH
-        if (init) {
-            model = IntArray(gw * gh)
-            bg = model
-            gridW = gw
-            gridH = gh
+        val existing = bg
+        val init = existing == null || gw != gridW || gh != gridH
+        val model: IntArray = if (init) {
+            IntArray(gw * gh).also {
+                bg = it
+                gridW = gw
+                gridH = gh
+            }
+        } else {
+            existing!!
         }
-        model!!
 
         var count = 0
         var sx = 0L

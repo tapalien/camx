@@ -8,7 +8,7 @@ import android.graphics.Paint
 data class Preset(val name: String, val forcedColor: Int?, val lifeMs: Long)
 
 val PRESETS = listOf(
-    Preset("Hot Wheels (warna mobil)", null, 900L),
+    Preset("Auto Warna", null, 900L),
     Preset("Api", Color.rgb(255, 106, 0), 700L),
     Preset("Neon Biru", Color.rgb(0, 200, 255), 900L)
 )

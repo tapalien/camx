@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.PorterDuff
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -17,7 +18,11 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
-import android.widget.Button
+import android.view.View
+import android.widget.Chronometer
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,6 +46,9 @@ import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,10 +59,15 @@ import kotlin.math.hypot
 class MainActivity : AppCompatActivity() {
 
     private lateinit var previewView: PreviewView
+    private lateinit var topBar: LinearLayout
+    private lateinit var bottomPanel: LinearLayout
     private lateinit var tvStatus: TextView
-    private lateinit var btnRecord: Button
-    private lateinit var btnShare: Button
-    private lateinit var btnPreset: Button
+    private lateinit var presetContainer: LinearLayout
+    private lateinit var recordButton: FrameLayout
+    private lateinit var recordInner: View
+    private lateinit var btnShare: ImageButton
+    private lateinit var recBadge: LinearLayout
+    private lateinit var chrono: Chronometer
 
     private val tracker = MotionTracker()
     private val renderer = TrailRenderer()
@@ -79,27 +92,38 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars =
+            false
 
         previewView = findViewById(R.id.previewView)
+        topBar = findViewById(R.id.topBar)
+        bottomPanel = findViewById(R.id.bottomPanel)
         tvStatus = findViewById(R.id.tvStatus)
-        btnRecord = findViewById(R.id.btnRecord)
+        presetContainer = findViewById(R.id.presetContainer)
+        recordButton = findViewById(R.id.recordButton)
+        recordInner = findViewById(R.id.recordInner)
         btnShare = findViewById(R.id.btnShare)
-        btnPreset = findViewById(R.id.btnPreset)
+        recBadge = findViewById(R.id.recBadge)
+        chrono = findViewById(R.id.chrono)
 
         previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+
+        // Beri ruang untuk status bar dan navigation bar.
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root)) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            topBar.setPadding(dp(16), bars.top + dp(12), dp(16), dp(24))
+            bottomPanel.setPadding(0, dp(32), 0, bars.bottom + dp(16))
+            insets
+        }
 
         analysisExecutor = Executors.newSingleThreadExecutor()
         overlayThread = HandlerThread("overlay").also { it.start() }
 
-        updatePresetUi()
-        btnPreset.setOnClickListener {
-            presetIndex = (presetIndex + 1) % PRESETS.size
-            renderer.preset = PRESETS[presetIndex]
-            renderer.clear()
-            updatePresetUi()
-        }
-        btnRecord.setOnClickListener {
+        buildPresetChips()
+
+        recordButton.setOnClickListener {
             if (recording == null) startRecording() else stopRecording()
         }
         btnShare.setOnClickListener { shareLastVideo() }
@@ -113,6 +137,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
     private fun hasCameraPermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
@@ -121,9 +147,56 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun updatePresetUi() {
-        btnPreset.text = PRESETS[presetIndex].name
+    private fun buildPresetChips() {
+        presetContainer.removeAllViews()
         renderer.preset = PRESETS[presetIndex]
+        PRESETS.forEachIndexed { index, preset ->
+            val chip = TextView(this).apply {
+                text = preset.name
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(18), dp(10), dp(18), dp(10))
+                setBackgroundResource(R.drawable.chip_bg)
+                isSelected = index == presetIndex
+                setOnClickListener { selectPreset(index) }
+            }
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = dp(6)
+                marginEnd = dp(6)
+            }
+            presetContainer.addView(chip, lp)
+        }
+    }
+
+    private fun selectPreset(index: Int) {
+        presetIndex = index
+        renderer.preset = PRESETS[index]
+        renderer.clear()
+        for (i in 0 until presetContainer.childCount) {
+            presetContainer.getChildAt(i).isSelected = i == index
+        }
+    }
+
+    private fun setRecordingUi(on: Boolean) {
+        recordInner.setBackgroundResource(
+            if (on) R.drawable.record_square else R.drawable.record_dot
+        )
+        val size = dp(if (on) 30 else 58)
+        val lp = recordInner.layoutParams as FrameLayout.LayoutParams
+        lp.width = size
+        lp.height = size
+        recordInner.layoutParams = lp
+        recBadge.visibility = if (on) View.VISIBLE else View.GONE
+        if (on) {
+            chrono.base = SystemClock.elapsedRealtime()
+            chrono.start()
+        } else {
+            chrono.stop()
+        }
     }
 
     private fun startCamera() {
@@ -165,9 +238,10 @@ class MainActivity : AppCompatActivity() {
                     val det = tracker.analyze(image)
                     if (det != null) {
                         val inv = Matrix()
-                        if (image.imageInfo.sensorToBufferTransform.invert(inv)) {
-                            // Ubah koordinat buffer analisis -> koordinat sensor,
-                            // supaya cocok dengan overlay yang digambar di preview + video.
+                        val toBuffer = image.imageInfo.sensorToBufferTransformMatrix
+                        if (toBuffer.invert(inv)) {
+                            // Koordinat buffer analisis -> koordinat sensor, supaya cocok
+                            // dengan overlay yang digambar di preview dan video.
                             val p = floatArrayOf(det.x, det.y, 0f, 0f, 1f, 0f)
                             inv.mapPoints(p)
                             val unit = hypot(p[4] - p[2], p[5] - p[3])
@@ -210,7 +284,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, group)
-                tvStatus.text = "Siap. Pasang HP di tripod, lalu gerakkan mainan."
+                tvStatus.text = "Pasang HP di tripod, lalu gerakkan mainan"
             } catch (e: Exception) {
                 Log.e(TAG, "bind gagal", e)
                 tvStatus.text = "Kamera gagal: ${e.message}"
@@ -237,27 +311,23 @@ class MainActivity : AppCompatActivity() {
 
         // Kunci orientasi selama merekam supaya video tidak rusak.
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
-        btnShare.visibility = android.view.View.GONE
+        btnShare.visibility = View.INVISIBLE
 
         recording = pending.start(ContextCompat.getMainExecutor(this)) { event ->
-            when (event) {
-                is VideoRecordEvent.Start -> {
-                    btnRecord.text = "STOP"
-                    tvStatus.text = "● Merekam..."
+            if (event is VideoRecordEvent.Start) {
+                setRecordingUi(true)
+                tvStatus.text = "Merekam..."
+            } else if (event is VideoRecordEvent.Finalize) {
+                recording = null
+                setRecordingUi(false)
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                if (event.hasError()) {
+                    tvStatus.text = "Rekaman gagal (kode ${event.error})"
+                } else {
+                    lastVideoUri = event.outputResults.outputUri
+                    tvStatus.text = "Tersimpan di Movies/KameCam"
+                    btnShare.visibility = View.VISIBLE
                 }
-                is VideoRecordEvent.Finalize -> {
-                    recording = null
-                    btnRecord.text = "REKAM"
-                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    if (event.hasError()) {
-                        tvStatus.text = "Rekaman gagal (kode ${event.error})"
-                    } else {
-                        lastVideoUri = event.outputResults.outputUri
-                        tvStatus.text = "Tersimpan di Movies/KameCam"
-                        btnShare.visibility = android.view.View.VISIBLE
-                    }
-                }
-                else -> {}
             }
         }
     }
