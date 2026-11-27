@@ -8,21 +8,26 @@ import kotlin.math.abs
 data class Detection(val x: Float, val y: Float, val color: Int)
 
 /**
- * Pelacak gerakan ringan: membandingkan frame sekarang dengan model latar belakang
- * yang pelan-pelan beradaptasi. Piksel yang beda = benda bergerak.
- * Kamera harus diam (pakai tripod) supaya hasilnya bagus.
+ * Pelacak gerakan ringan. Sebuah piksel dianggap "benda bergerak" kalau:
+ *  1) beda dari model latar belakang (pelan beradaptasi), DAN
+ *  2) beda dari frame sebelumnya.
+ * Syarat kedua membuang "bayangan" posisi lama benda, jadi titik yang dihasilkan
+ * menempel di posisi benda sekarang, bukan tertinggal di belakangnya.
+ * Kamera harus diam (pakai tripod).
  */
 class MotionTracker {
     private val step = 4
     private var bg: IntArray? = null
+    private var prev: IntArray? = null
     private var gridW = 0
     private var gridH = 0
     private var smR = 255f
     private var smG = 255f
     private var smB = 255f
 
-    @Volatile var threshold = 30
-    @Volatile var minPixels = 4
+    @Volatile var threshold = 28
+    @Volatile var prevThreshold = 14
+    @Volatile var minPixels = 3
 
     fun analyze(image: ImageProxy): Detection? {
         val w = image.width
@@ -42,16 +47,21 @@ class MotionTracker {
         val vRow = vP.rowStride
         val vPix = vP.pixelStride
 
-        val existing = bg
-        val init = existing == null || gw != gridW || gh != gridH
-        val model: IntArray = if (init) {
-            IntArray(gw * gh).also {
-                bg = it
-                gridW = gw
-                gridH = gh
-            }
+        val existingBg = bg
+        val existingPrev = prev
+        val init = existingBg == null || existingPrev == null || gw != gridW || gh != gridH
+        val model: IntArray
+        val last: IntArray
+        if (init) {
+            model = IntArray(gw * gh)
+            last = IntArray(gw * gh)
+            bg = model
+            prev = last
+            gridW = gw
+            gridH = gh
         } else {
-            existing!!
+            model = existingBg!!
+            last = existingPrev!!
         }
 
         var count = 0
@@ -70,10 +80,12 @@ class MotionTracker {
                 val l16 = l shl 4
                 if (init) {
                     model[i] = l16
+                    last[i] = l
                     continue
                 }
-                val d = abs(l16 - model[i]) shr 4
-                if (d > threshold) {
+                val dBg = abs(l16 - model[i]) shr 4
+                val dPrev = abs(l - last[i])
+                if (dBg > threshold && dPrev > prevThreshold) {
                     val cx = px shr 1
                     val cy = py shr 1
                     val u = uB.get(cy * uRow + cx * uPix).toInt() and 0xFF
@@ -85,7 +97,8 @@ class MotionTracker {
                     sU += u
                     sV += v
                 }
-                model[i] += (l16 - model[i]) shr 3
+                model[i] += (l16 - model[i]) shr 4
+                last[i] = l
             }
         }
 

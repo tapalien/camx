@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.PorterDuff
@@ -17,7 +18,9 @@ import android.os.HandlerThread
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Rational
 import android.util.Size
+import android.view.Surface
 import android.view.View
 import android.widget.Chronometer
 import android.widget.FrameLayout
@@ -32,6 +35,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.effects.OverlayEffect
@@ -123,13 +128,20 @@ class MainActivity : AppCompatActivity() {
 
         buildPresetChips()
 
+        // Tekan lama judul untuk mode debug (cincin biru muda di posisi deteksi).
+        findViewById<TextView>(R.id.tvTitle).setOnLongClickListener {
+            renderer.debug = !renderer.debug
+            tvStatus.text = if (renderer.debug) "Mode debug AKTIF" else "Mode debug mati"
+            true
+        }
+
         recordButton.setOnClickListener {
             if (recording == null) startRecording() else stopRecording()
         }
         btnShare.setOnClickListener { shareLastVideo() }
 
         if (hasCameraPermission()) {
-            startCamera()
+            previewView.post { startCamera() }
         } else {
             permissionLauncher.launch(
                 arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
@@ -204,9 +216,14 @@ class MainActivity : AppCompatActivity() {
         future.addListener({
             val provider = future.get()
 
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
+            val ratio16x9 = AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+
+            val preview = Preview.Builder()
+                .setResolutionSelector(
+                    ResolutionSelector.Builder().setAspectRatioStrategy(ratio16x9).build()
+                )
+                .build()
+                .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
             val recorder = Recorder.Builder()
                 .setQualitySelector(
@@ -222,9 +239,10 @@ class MainActivity : AppCompatActivity() {
             val analysis = ImageAnalysis.Builder()
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(ratio16x9)
                         .setResolutionStrategy(
                             ResolutionStrategy(
-                                Size(640, 480),
+                                Size(1280, 720),
                                 ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
                             )
                         )
@@ -274,7 +292,18 @@ class MainActivity : AppCompatActivity() {
             }
             overlay = effect
 
+            // ViewPort: semua use case (preview, video, analisis) memakai bidang pandang
+            // yang sama, supaya video tidak distretch dan efek tepat di posisi benda.
+            val portrait =
+                resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
+            val rotation = previewView.display?.rotation ?: Surface.ROTATION_0
+            val viewPort = ViewPort.Builder(
+                if (portrait) Rational(9, 16) else Rational(16, 9),
+                rotation
+            ).setScaleType(ViewPort.FILL_CENTER).build()
+
             val group = UseCaseGroup.Builder()
+                .setViewPort(viewPort)
                 .addUseCase(preview)
                 .addUseCase(vc)
                 .addUseCase(analysis)
